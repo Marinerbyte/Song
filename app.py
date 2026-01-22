@@ -1,80 +1,81 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, send_from_directory, jsonify, make_response
 import os
 import requests
-import threading
-import time
 from pathlib import Path
+from threading import Thread
+import time
 
 app = Flask(__name__)
 AUDIO_DIR = Path("audio")
 AUDIO_DIR.mkdir(exist_ok=True)
 
-# --------------------------
-# Background cleanup
-# --------------------------
-def cleanup_loop():
+# ----------------------------
+# Helper: download song from lightweight source
+# ----------------------------
+def download_song(song_name):
+    """Lightweight example: Telegram/Archive style source"""
+    safe_name = song_name.replace(" ", "_")
+    file_path = AUDIO_DIR / f"{safe_name}.mp3"
+    if file_path.exists():
+        return file_path.name
+
+    # Example source (replace with actual lightweight URL fetch)
+    # For now using a placeholder small mp3
+    url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+    r = requests.get(url, stream=True, timeout=15)
+    if r.status_code == 200:
+        with open(file_path, "wb") as f:
+            for chunk in r.iter_content(1024):
+                f.write(chunk)
+        return file_path.name
+    return None
+
+# ----------------------------
+# Cleanup old files in background
+# ----------------------------
+def cleanup_task():
     while True:
         now = time.time()
-        for f in AUDIO_DIR.glob("*.mp3"):
-            if now - f.stat().st_mtime > 3600:  # 1 hour purani files delete
+        for f in AUDIO_DIR.iterdir():
+            if f.is_file() and now - f.stat().st_mtime > 3600:  # 1 hour
                 f.unlink()
-        time.sleep(600)  # 10 min interval
+        time.sleep(600)  # every 10 minutes
 
-threading.Thread(target=cleanup_loop, daemon=True).start()
+Thread(target=cleanup_task, daemon=True).start()
 
-# --------------------------
-# Simulated Song Search
-# --------------------------
-def download_song(song_name):
-    """
-    Placeholder function
-    Real version me external lightweight source ya archive/telegram API se download
-    """
-    filename = AUDIO_DIR / f"{song_name.replace(' ','_')}.mp3"
-    
-    if not filename.exists():
-        # Simulate small mp3 file (for testing)
-        with open(filename, "wb") as f:
-            f.write(b"\x00" * 1024)  # 1KB dummy file
-    
-    return filename.name
-
-# --------------------------
-# API: Search + Fetch
-# --------------------------
+# ----------------------------
+# API: search / fetch song
+# ----------------------------
 @app.route("/api/search", methods=["POST"])
-def search_song():
+def api_search():
     data = request.get_json()
-    if not data or "query" not in data:
-        return jsonify({"error": "Missing query"}), 400
-    
-    song_name = data["query"]
-    file_name = download_song(song_name)
-    return jsonify({"url": f"/audio/{file_name}"})
+    query = data.get("query")
+    if not query:
+        return jsonify({"error": "No query provided"}), 400
 
-@app.route("/api/fetch", methods=["POST"])
-def fetch_song():
-    data = request.get_json()
-    if not data or "file_id" not in data:
-        return jsonify({"error": "Missing file_id"}), 400
-    
-    file_id = data["file_id"]
-    # In this simple version, file_id = song name
-    file_name = download_song(file_id)
-    return jsonify({"url": f"/audio/{file_name}"})
+    filename = download_song(query)
+    if not filename:
+        return jsonify({"error": "Failed to fetch"}), 500
 
-# --------------------------
+    return jsonify({"url": f"/audio/{filename}"})
+
+# ----------------------------
 # Serve audio files
-# --------------------------
-from flask import send_from_directory
-
+# ----------------------------
 @app.route("/audio/<path:filename>")
 def serve_audio(filename):
-    return send_from_directory(AUDIO_DIR, filename)
+    file_path = AUDIO_DIR / filename
+    if not file_path.exists():
+        return "File not found", 404
 
-# --------------------------
-# Run app
-# --------------------------
+    resp = make_response(send_from_directory(AUDIO_DIR, filename))
+    resp.headers["Content-Type"] = "audio/mpeg"
+    resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    return resp
+
+# ----------------------------
+# Run server
+# ----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
