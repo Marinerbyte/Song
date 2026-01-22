@@ -1,7 +1,7 @@
 from flask import Flask, request, send_from_directory, jsonify, make_response
 import os
-import requests
 from pathlib import Path
+import yt_dlp
 from threading import Thread
 import time
 
@@ -10,28 +10,7 @@ AUDIO_DIR = Path("audio")
 AUDIO_DIR.mkdir(exist_ok=True)
 
 # ----------------------------
-# Helper: download song from lightweight source
-# ----------------------------
-def download_song(song_name):
-    """Lightweight example: Telegram/Archive style source"""
-    safe_name = song_name.replace(" ", "_")
-    file_path = AUDIO_DIR / f"{safe_name}.mp3"
-    if file_path.exists():
-        return file_path.name
-
-    # Example source (replace with actual lightweight URL fetch)
-    # For now using a placeholder small mp3
-    url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-    r = requests.get(url, stream=True, timeout=15)
-    if r.status_code == 200:
-        with open(file_path, "wb") as f:
-            for chunk in r.iter_content(1024):
-                f.write(chunk)
-        return file_path.name
-    return None
-
-# ----------------------------
-# Cleanup old files in background
+# Cleanup old files
 # ----------------------------
 def cleanup_task():
     while True:
@@ -39,12 +18,42 @@ def cleanup_task():
         for f in AUDIO_DIR.iterdir():
             if f.is_file() and now - f.stat().st_mtime > 3600:  # 1 hour
                 f.unlink()
-        time.sleep(600)  # every 10 minutes
+        time.sleep(600)  # every 10 min
 
 Thread(target=cleanup_task, daemon=True).start()
 
 # ----------------------------
-# API: search / fetch song
+# Download song from YouTube
+# ----------------------------
+def download_song(song_name):
+    safe_name = song_name.replace(" ", "_")
+    file_path = AUDIO_DIR / f"{safe_name}.mp3"
+    if file_path.exists():
+        return file_path.name
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(AUDIO_DIR / f"{safe_name}.%(ext)s"),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+        "quiet": True,
+        "noplaylist": True,
+    }
+
+    # Search YouTube
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch1:{song_name}", download=True)
+            return f"{safe_name}.mp3"
+        except Exception as e:
+            print(f"Download error: {e}")
+            return None
+
+# ----------------------------
+# API to fetch song
 # ----------------------------
 @app.route("/api/search", methods=["POST"])
 def api_search():
